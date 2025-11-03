@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>手機棋盤 Prototype — 丟骰子走格子</title>
+<!-- Firebase SDKs -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<style>
+  :root{--bg:#faf9f7;--card:#ffffff;--accent:#5b8cff;--muted:#666;}
+  html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans TC",sans-serif;background:var(--bg);color:#111}
+  .wrap{max-width:900px;margin:0 auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+  header{display:flex;align-items:center;gap:12px}
+  h1{font-size:18px;margin:0}
+  .card{background:var(--card);border-radius:12px;padding:12px;box-shadow:0 6px 20px rgba(12,15,30,0.06)}
+  .row{display:flex;gap:8px;align-items:center}
+  input[type=text]{flex:1;padding:10px;border-radius:8px;border:1px solid #eee}
+  button{background:var(--accent);color:white;border:none;padding:10px 12px;border-radius:8px;font-weight:600}
+  .board{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;padding:8px;touch-action:manipulation}
+  .cell{background:#f6f7fb;border-radius:8px;min-height:54px;display:flex;align-items:center;justify-content:center;position:relative;font-weight:600;color:#333}
+  .cell .idx{position:absolute;left:6px;top:4px;font-size:11px;color:var(--muted)}
+  .pieces{display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
+  .piece{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:white;font-weight:700}
+  .controls{display:flex;gap:8px;align-items:center;justify-content:center;margin-top:8px}
+  .log{font-size:13px;color:var(--muted);padding:8px;border-radius:8px}
+  .players{display:flex;gap:8px;overflow:auto;padding:6px}
+  .playerCard{background:#f2f5ff;padding:8px;border-radius:8px;min-width:100px}
+  .small{font-size:12px;color:var(--muted)}
+  @media (max-width:420px){
+    .cell{min-height:48px}
+    .piece{width:24px;height:24px;font-size:12px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>丟骰子走格子（Prototype）</h1>
+  </header>
+
+  <div class="card" id="lobby">
+    <div class="row" style="margin-bottom:8px">
+      <input id="name" type="text" placeholder="輸入你的名字（例：小明）" />
+      <button id="createBtn">建立房間</button>
+      <button id="joinBtn">加入房間</button>
+    </div>
+    <div class="row small">
+      <div id="roomInfo">尚未加入房間</div>
+    </div>
+    <div style="margin-top:8px" class="small">建立房間後分享網址或房號給朋友即可快速加入</div>
+  </div>
+
+  <div class="card" id="gameUI" style="display:none">
+    <div class="row" style="justify-content:space-between">
+      <div class="small">房號：<span id="roomIdView"></span></div>
+      <div class="small">你的id：<span id="myIdView"></span></div>
+    </div>
+
+    <div style="margin-top:8px" class="players" id="playersList"></div>
+
+    <div style="margin-top:10px" class="board" id="board"></div>
+
+    <div class="controls">
+      <div id="diceDisplay" class="log">擲骰結果：—</div>
+      <button id="rollBtn">擲骰子</button>
+      <button id="endTurnBtn">結束回合</button>
+    </div>
+
+    <div style="margin-top:8px" class="log" id="log">遊戲尚未開始</div>
+    <div style="margin-top:8px" class="small">提示：建立房間後，第一個加入的人為房主。房主按 <b>開始遊戲</b>（會在玩家數>1時顯示）即可開始。</div>
+    <div style="margin-top:8px" id="startWrap"></div>
+  </div>
+
+</div>
+
+<script>
+/* ============================
+  Firebase config - 填入你的專案資訊
+  在 Firebase 控制台 -> 專案設定 找到 config，貼到下面
+  範例（請替換為你自己的）：
+*/
+const firebaseConfig = {
+  apiKey: "AIzaSyBiTqclRRAs-PZZ68Usy07fKuFFUmV8_9g",
+  authDomain: "online-monopoly-4dd83.firebaseapp.com",
+  databaseURL: "https://online-monopoly-4dd83-default-rtdb.firebaseio.com",
+  projectId: "online-monopoly-4dd83",
+  storageBucket: "online-monopoly-4dd83.firebasestorage.app",
+  messagingSenderId: "962099271606",
+  appId: "1:962099271606:web:db60f6658ce4b6da10d317",
+  measurementId: "G-W7Y7F876KM"
+};
+/* ============================ */
+
+if (!firebaseConfig.apiKey || firebaseConfig.apiKey.includes("REPLACE")) {
+  alert("請先到程式中填入你的 Firebase config（firebaseConfig）後再測試。");
+}
+
+// init firebase
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+/* ---------- game settings ---------- */
+const BOARD_SIZE = 20; // 格子數量（簡單範例）
+const COLORS = ["#ef4444","#f59e0b","#10b981","#3b82f6","#8b5cf6","#ec4899"];
+
+/* ---------- DOM ---------- */
+const nameInput = document.getElementById("name");
+const createBtn = document.getElementById("createBtn");
+const joinBtn = document.getElementById("joinBtn");
+const roomInfo = document.getElementById("roomInfo");
+const lobby = document.getElementById("lobby");
+const gameUI = document.getElementById("gameUI");
+const roomIdView = document.getElementById("roomIdView");
+const myIdView = document.getElementById("myIdView");
+const playersList = document.getElementById("playersList");
+const boardEl = document.getElementById("board");
+const diceDisplay = document.getElementById("diceDisplay");
+const rollBtn = document.getElementById("rollBtn");
+const endTurnBtn = document.getElementById("endTurnBtn");
+const logEl = document.getElementById("log");
+const startWrap = document.getElementById("startWrap");
+
+/* ---------- state ---------- */
+let roomId = null;
+let myId = null;
+let myName = null;
+let roomRef = null;
+let localState = null; // mirror of room state
+
+/* ---------- helpers ---------- */
+function uid(len=6){
+  const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  let s = "";
+  for(let i=0;i<len;i++) s += chars[Math.floor(Math.random()*chars.length)];
+  return s;
+}
+function now(){ return Date.now(); }
+function setLog(txt){ logEl.textContent = txt; }
+
+/* ---------- build board UI ---------- */
+function buildBoard(){
+  boardEl.innerHTML = "";
+  for(let i=0;i<BOARD_SIZE;i++){
+    const c = document.createElement("div");
+    c.className = "cell";
+    c.dataset.idx = i;
+    c.innerHTML = `<div class="idx">${i+1}</div><div class="pieces" id="cell-${i}"></div>`;
+    boardEl.appendChild(c);
+  }
+}
+
+/* ---------- room functions ---------- */
+createBtn.addEventListener("click", async ()=>{
+  myName = (nameInput.value || "玩家").slice(0,16);
+  myId = uid(6);
+  const newRoom = uid(5).toLowerCase();
+  roomId = newRoom;
+  roomRef = db.ref('rooms/'+roomId);
+  // initialize room state
+  const init = {
+    createdAt: now(),
+    players: {},
+    turnOrder: [],
+    currentTurn: 0,
+    started: false,
+    boardSize: BOARD_SIZE,
+    lastAction: null
+  };
+  await roomRef.set(init);
+  joinRoom(roomId, myId, myName, true);
+});
+
+joinBtn.addEventListener("click", ()=>{
+  myName = (nameInput.value || "玩家").slice(0,16);
+  myId = uid(6);
+  const ask = prompt("輸入房號或連結 (房號範例: abc12)");
+  if(!ask) return;
+  // extract possible room id
+  const m = ask.match(/[A-Za-z0-9]{4,6}/);
+  if(!m) return alert("找不到有效房號，請重新輸入。");
+  roomId = m[0].toLowerCase();
+  roomRef = db.ref('rooms/'+roomId);
+  joinRoom(roomId, myId, myName, false);
+});
+
+// join logic (isOwner flag if creator)
+async function joinRoom(rid, playerId, playerName, isOwner){
+  roomRef = db.ref('rooms/'+rid);
+  // add player to players list
+  const playerRef = roomRef.child('players').child(playerId);
+  const playerObj = {id: playerId, name: playerName, pos: 0, color: COLORS[Math.floor(Math.random()*COLORS.length)], joinedAt: now(), isOwner: !!isOwner};
+  await playerRef.set(playerObj);
+  // ensure presence removal on disconnect
+  playerRef.onDisconnect().remove();
+  // listen room changes
+  roomRef.on('value', snapshot=>{
+    localState = snapshot.val();
+    if(!localState) {
+      alert("房間不存在或已刪除。");
+      cleanup();
+      return;
+    }
+    renderRoom();
+  });
+  // update UI
+  lobby.style.display = 'none';
+  gameUI.style.display = 'block';
+  roomIdView.textContent = rid;
+  myIdView.textContent = playerId;
+  // share link
+  const joinLink = location.href.split('#')[0] + '#room=' + rid;
+  roomInfo.textContent = '分享此連結加入：' + joinLink;
+  // auto-handle if url had room id (support opening via link)
+  if(location.hash.includes('room=')){
+    // nothing extra
+  }
+}
+
+/* ---------- render ---------- */
+function renderRoom(){
+  // players
+  playersList.innerHTML = '';
+  const players = localState.players || {};
+  const order = localState.turnOrder && localState.turnOrder.length ? localState.turnOrder : Object.keys(players);
+  // if turnOrder empty, set it once (owner only)
+  if(order.length === 0 && Object.keys(players).length > 0){
+    // set turnOrder in DB (owner should set, but do optimistic set if no owner)
+    const ids = Object.keys(players);
+    roomRef.child('turnOrder').set(ids);
+    return;
+  }
+
+  for(const pid of Object.keys(players)){
+    const p = players[pid];
+    const card = document.createElement('div');
+    card.className = 'playerCard';
+    card.style.borderLeft = `4px solid ${p.color || '#ccc'}`;
+    let meMark = pid===myId ? '（你）' : '';
+    card.innerHTML = `<div style="font-weight:700">${p.name} ${meMark}</div>
+      <div class="small">位置：${p.pos}</div>
+      <div class="small">id：${p.id}</div>`;
+    playersList.appendChild(card);
+  }
+
+  // draw board pieces
+  for(let i=0;i<BOARD_SIZE;i++){
+    const cell = document.getElementById('cell-'+i);
+    cell.innerHTML = ''; // clear pieces
+  }
+  for(const pid in players){
+    const p = players[pid];
+    const pos = Math.max(0, Math.min(BOARD_SIZE-1, p.pos || 0));
+    const el = document.createElement('div');
+    el.className = 'piece';
+    el.style.background = p.color || '#666';
+    el.textContent = p.name[0] || '?';
+    el.title = p.name + (pid===localState.turnOrder?.[localState.currentTurn] ? ' (當前回合)' : '');
+    document.getElementById('cell-'+pos).appendChild(el);
+  }
+
+  // dice & turn UI
+  const currentPlayerId = localState.turnOrder ? localState.turnOrder[localState.currentTurn] : null;
+  const isMyTurn = currentPlayerId === myId;
+  rollBtn.disabled = !isMyTurn || !localState.started;
+  endTurnBtn.disabled = !isMyTurn || !localState.started;
+
+  diceDisplay.textContent = '擲骰結果：' + (localState.lastAction?.dice ?? '—');
+  setLog(localState.started ? `輪到 ${players[currentPlayerId]?.name || 'N/A'}（id:${currentPlayerId}）` : '等待房主開始遊戲');
+
+  // start button for owner
+  startWrap.innerHTML = '';
+  // owner detection: first player in list is owner if flagged, else the earliest joined
+  const ownerId = Object.values(players).find(p => p.isOwner)?.id || Object.keys(players)[0];
+  if(ownerId === myId && !localState.started && Object.keys(players).length > 1){
+    const btn = document.createElement('button');
+    btn.textContent = '開始遊戲';
+    btn.onclick = ()=> roomRef.child('started').set(true);
+    startWrap.appendChild(btn);
+  }
+
+  // if game not started, disable roll
+  if(!localState.started) {
+    rollBtn.disabled = true;
+    endTurnBtn.disabled = true;
+  }
+}
+
+/* ---------- gameplay actions ---------- */
+rollBtn.addEventListener('click', async ()=>{
+  if(!localState) return;
+  const currentPlayerId = localState.turnOrder[localState.currentTurn];
+  if(currentPlayerId !== myId) return alert('現在不是你的回合');
+  // simple protection: prevents double-roll by same player if lastAction stamp belonged to same turn
+  const dice = Math.floor(Math.random()*6)+1;
+  // write lastAction, then move
+  const action = {type:'roll', by: myId, dice, ts: now()};
+  await roomRef.child('lastAction').set(action);
+  // move player
+  const playerPath = 'players/' + myId;
+  const snap = await roomRef.child(playerPath).once('value');
+  const p = snap.val();
+  const oldPos = p?.pos || 0;
+  const newPos = Math.min(BOARD_SIZE-1, oldPos + dice);
+  await roomRef.child(playerPath+'/pos').set(newPos);
+  // if reached end -> game over marker
+  if(newPos >= BOARD_SIZE-1){
+    await roomRef.child('winner').set({id: myId, name: p.name, at: now()});
+  }
+});
+
+endTurnBtn.addEventListener('click', async ()=>{
+  if(!localState) return;
+  const total = localState.turnOrder?.length || 0;
+  if(total <= 0) return;
+  const next = (localState.currentTurn + 1) % total;
+  await roomRef.child('currentTurn').set(next);
+});
+
+/* ---------- room cleanup ---------- */
+function cleanup(){
+  // turn off listeners
+  if(roomRef) roomRef.off();
+  roomRef = null;
+  localState = null;
+  roomId = null;
+  myId = null;
+  lobby.style.display = 'block';
+  gameUI.style.display = 'none';
+  roomInfo.textContent = '尚未加入房間';
+}
+
+/* ---------- initial board build ---------- */
+buildBoard();
+
+/* ---------- auto-join if URL contains room=... ---------- */
+window.addEventListener('load', ()=>{
+  const m = location.hash.match(/room=([A-Za-z0-9]+)/);
+  if(m){
+    // auto-prompt for name then join
+    const suggestedName = prompt("輸入你的名字（會顯示給房內玩家）", "玩家");
+    nameInput.value = suggestedName || "玩家";
+    joinBtn.click();
+    // Wait a bit then simulate prompt join flow:
+    setTimeout(()=>{
+      const ask = m[1];
+      const room = ask;
+      if(room){
+        myName = (nameInput.value || "玩家").slice(0,16);
+        myId = uid(6);
+        roomId = room.toLowerCase();
+        roomRef = db.ref('rooms/'+roomId);
+        joinRoom(roomId, myId, myName, false);
+      }
+    },300);
+  }
+});
+
+/* ---------- observe winner ---------- */
+db.ref().child('rooms').on('child_changed', snap=>{
+  const val = snap.val();
+  if(val && val.winner){
+    alert('遊戲結束！得勝者：' + val.winner.name);
+  }
+});
+</script>
+</body>
+</html>
