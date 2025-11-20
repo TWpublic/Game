@@ -64,7 +64,7 @@
     <div class="controls">
       <div id="diceDisplay" class="log">擲骰結果：—</div>
       <button id="rollBtn">擲骰子</button>
-      <button id="endTurnBtn">結束回合</button>
+      <!-- 結束回合按鈕已移除 -->
     </div>
 
     <div style="margin-top:8px" class="log" id="log">遊戲尚未開始</div>
@@ -117,7 +117,7 @@ const playersList = document.getElementById("playersList");
 const boardEl = document.getElementById("board");
 const diceDisplay = document.getElementById("diceDisplay");
 const rollBtn = document.getElementById("rollBtn");
-const endTurnBtn = document.getElementById("endTurnBtn");
+// const endTurnBtn = document.getElementById("endTurnBtn"); // 已移除
 const logEl = document.getElementById("log");
 const startWrap = document.getElementById("startWrap");
 
@@ -150,11 +150,17 @@ function buildBoard(){
   }
 }
 
+// 新增：產生 4 位數字房號
+function generateRoomId(){
+  return String(Math.floor(1000 + Math.random()*9000)); // 1000-9999
+}
+
 /* ---------- room functions ---------- */
 createBtn.addEventListener("click", async ()=>{
   myName = (nameInput.value || "玩家").slice(0,16);
   myId = uid(6);
-  const newRoom = uid(5).toLowerCase();
+  // 改為四位數字房號
+  const newRoom = generateRoomId();
   roomId = newRoom;
   roomRef = db.ref('rooms/'+roomId);
   // initialize room state
@@ -171,16 +177,25 @@ createBtn.addEventListener("click", async ()=>{
   joinRoom(roomId, myId, myName, true);
 });
 
-joinBtn.addEventListener("click", ()=>{
+joinBtn.addEventListener("click", async ()=>{
   myName = (nameInput.value || "玩家").slice(0,16);
   myId = uid(6);
-  const ask = prompt("輸入房號或連結 (房號範例: abc12)");
+  const ask = prompt("輸入房號或連結 (房號範例: 1234)");
   if(!ask) return;
-  // extract possible room id
-  const m = ask.match(/[A-Za-z0-9]{4,6}/);
-  if(!m) return alert("找不到有效房號，請重新輸入。");
-  roomId = m[0].toLowerCase();
+  // extract 4-digit room id
+  const m = ask.match(/\d{4}/);
+  if(!m) return alert("找不到有效房號（需為 4 位數字），請重新輸入。");
+  roomId = m[0];
   roomRef = db.ref('rooms/'+roomId);
+
+  // 檢查該房間是否存在且已有玩家（禁止加入不存在或空的房間）
+  const snap = await roomRef.once('value');
+  const data = snap.val();
+  const hasPlayers = data && data.players && Object.keys(data.players).length > 0;
+  if(!snap.exists() || !hasPlayers){
+    return alert("房間不存在或尚無玩家，無法加入。請請求房主建立房間後再加入，或直接按「建立房間」。");
+  }
+
   joinRoom(roomId, myId, myName, false);
 });
 
@@ -280,7 +295,7 @@ function renderRoom(){
   const currentPlayerId = turnOrder.length ? turnOrder[currentTurn] : null;
   const isMyTurn = currentPlayerId === myId;
   rollBtn.disabled = !isMyTurn || !localState.started;
-  endTurnBtn.disabled = !isMyTurn || !localState.started;
+  // endTurnBtn.disabled = !isMyTurn || !localState.started; // 已移除
 
   diceDisplay.textContent = '擲骰結果：' + (localState.lastAction?.dice ?? '—');
   setLog(localState.started ? `輪到 ${players[currentPlayerId]?.name || 'N/A'}（id:${currentPlayerId || 'null'}）` : '等待房主開始遊戲');
@@ -291,28 +306,41 @@ function renderRoom(){
   if(ownerId === myId && !localState.started && Object.keys(players).length > 1){
     const btn = document.createElement('button');
     btn.textContent = '開始遊戲';
-    btn.onclick = ()=> roomRef.child('started').set(true);
+    btn.onclick = async ()=>{
+      // ensure turnOrder initialized from current players, then start
+      const snap = await roomRef.child('players').once('value');
+      const ps = snap.val() || {};
+      const ids = Object.keys(ps);
+      if(ids.length > 0){
+        await roomRef.update({ started: true, turnOrder: ids, currentTurn: 0 });
+      } else {
+        await roomRef.child('started').set(true);
+      }
+    };
     startWrap.appendChild(btn);
   }
 
   // if game not started, disable roll
   if(!localState.started) {
     rollBtn.disabled = true;
-    endTurnBtn.disabled = true;
+    // endTurnBtn.disabled = true; // 已移除
   }
 }
 
 /* ---------- gameplay actions ---------- */
 rollBtn.addEventListener('click', async ()=>{
   if(!localState) return;
+
+  // 取得伺服器上最新的 turnOrder（避免本地 stale）
+  const orderSnap = await roomRef.child('turnOrder').once('value');
+  const serverOrder = orderSnap.val() || [];
   const expectedCurrent = Number.isInteger(localState.currentTurn) ? localState.currentTurn : 0;
-  const turnOrder = localState.turnOrder || [];
-  const currentPlayerId = turnOrder[expectedCurrent];
+  const currentPlayerId = serverOrder[expectedCurrent] || serverOrder[0] || null;
   if(currentPlayerId !== myId) return alert('現在不是你的回合');
 
   // disable UI immediately to prevent multiple clicks
   rollBtn.disabled = true;
-  endTurnBtn.disabled = true;
+  // endTurnBtn.disabled = true; // 已移除
 
   // 擲骰並寫入 lastAction
   const dice = Math.floor(Math.random()*6)+1;
@@ -333,24 +361,21 @@ rollBtn.addEventListener('click', async ()=>{
     return;
   }
 
-  // 自動將 currentTurn 原子性地移到下一位玩家，但僅在 DB 中的 currentTurn 與我們預期相同時才推進一次
-  const total = turnOrder.length || 0;
+  // 讀取最新版 turnOrder（再次保險）並以 transaction 原子推進 currentTurn，
+  // transaction 內檢查伺服器端的 currentTurn 指向的 player id 確實是我們要結束回合的人
+  const latestOrderSnap = await roomRef.child('turnOrder').once('value');
+  const latestOrder = latestOrderSnap.val() || [];
+  const total = latestOrder.length || 0;
   if(total > 0){
-    await roomRef.child('currentTurn').transaction(curr=>{
+    const res = await roomRef.child('currentTurn').transaction(curr=>{
       const nowCurr = Number.isInteger(curr) ? curr : 0;
-      // 若已被其他人或另一個執行緒改動，則不重複推進
-      if(nowCurr !== expectedCurrent) return curr;
+      const currPid = latestOrder[nowCurr] || null;
+      // 只有當伺服器端目前輪到的人等於我們時，才移動到下一位
+      if(currPid !== myId) return curr;
       return (nowCurr + 1) % total;
     });
+    // 若 transaction 未成功提交（res.committed === false），表示已被他人改過，正常不必再處理
   }
-});
-
-endTurnBtn.addEventListener('click', async ()=>{
-  if(!localState) return;
-  const total = localState.turnOrder?.length || 0;
-  if(total <= 0) return;
-  const next = (localState.currentTurn + 1) % total;
-  await roomRef.child('currentTurn').set(next);
 });
 
 /* ---------- room cleanup ---------- */
@@ -370,25 +395,31 @@ function cleanup(){
 buildBoard();
 
 /* ---------- auto-join if URL contains room=... ---------- */
-window.addEventListener('load', ()=>{
-  const m = location.hash.match(/room=([A-Za-z0-9]+)/);
+window.addEventListener('load', async ()=>{
+  const m = location.hash.match(/room=(\d{4})/);
   if(m){
     // auto-prompt for name then join
     const suggestedName = prompt("輸入你的名字（會顯示給房內玩家）", "玩家");
     nameInput.value = suggestedName || "玩家";
-    joinBtn.click();
-    // Wait a bit then simulate prompt join flow:
-    setTimeout(()=>{
-      const ask = m[1];
-      const room = ask;
-      if(room){
-        myName = (nameInput.value || "玩家").slice(0,16);
-        myId = uid(6);
-        roomId = room.toLowerCase();
-        roomRef = db.ref('rooms/'+roomId);
-        joinRoom(roomId, myId, myName, false);
+
+    // 解析欲加入的房號並先檢查 DB 是否允許加入
+    const room = m[1];
+    if(room){
+      myName = (nameInput.value || "玩家").slice(0,16);
+      myId = uid(6);
+      roomId = room;
+      roomRef = db.ref('rooms/'+roomId);
+
+      const snap = await roomRef.once('value');
+      const data = snap.val();
+      const hasPlayers = data && data.players && Object.keys(data.players).length > 0;
+      if(!snap.exists() || !hasPlayers){
+        alert("網址或房號指向的房間不存在或尚無玩家，無法自動加入。請先由房主建立房間再分享。");
+        return;
       }
-    },300);
+
+      joinRoom(roomId, myId, myName, false);
+    }
   }
 });
 
