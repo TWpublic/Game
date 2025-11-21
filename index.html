@@ -499,6 +499,8 @@ function renderRoom(){
     const pos = Math.max(0, Math.min(BOARD_SIZE-1, p.pos || 0));
     const el = document.createElement('div');
     el.className = 'piece';
+    // allow animation to identify which piece belongs to誰
+    el.dataset.pid = pid;
     el.style.background = p.color || '#666';
     el.textContent = p.name[0] || '?';
     el.title = p.name + (pid===turnOrder[currentTurn] ? ' (當前回合)' : '');
@@ -606,30 +608,32 @@ rollBtn.addEventListener('click', async ()=>{
   // disable UI immediately to prevent multiple clicks
   rollBtn.disabled = true;
 
-  // 預先產生點數，然後播動畫顯示（動畫結束後才把結果寫入 DB）
+  // 預先產生點數，然後播動畫顯示（動畫結束後才把結果寫入 DB 或做步進）
   const dice = Math.floor(Math.random()*6)+1;
   try{
     await animateDiceAndShow(dice);
 
-    // 寫 lastAction
+    // 寫 lastAction (so others see the dice result)
     const action = {type:'roll', by: myId, dice, ts: now()};
     await roomRef.child('lastAction').set(action);
 
-    // 移動玩家位置
+    // read current stored position (server) as "from"
     const playerPath = 'players/' + myId;
     const snap = await roomRef.child(playerPath).once('value');
     const p = snap.val();
     const oldPos = p?.pos || 0;
-    const newPos = Math.min(BOARD_SIZE-1, oldPos + dice);
-    await roomRef.child(playerPath+'/pos').set(newPos);
+    const targetPos = Math.min(BOARD_SIZE-1, oldPos + dice);
 
-    // 若到達終點，寫入 winner 並結束（不再自動輪下一位）
-    if(newPos >= BOARD_SIZE-1){
+    // perform local step-by-step animation then persist final pos
+    await animatePlayerSteps(myId, oldPos, dice);
+
+    // check winner after move
+    if(targetPos >= BOARD_SIZE-1){
       await roomRef.child('winner').set({id: myId, name: p.name, at: now()});
       return;
     }
 
-    // 讀取最新版 turnOrder 並以 transaction 原子推進 currentTurn（同前）
+    // 讀取最新版 turnOrder 並以 transaction 原子推進 currentTurn
     const latestOrderSnap = await roomRef.child('turnOrder').once('value');
     const latestOrder = latestOrderSnap.val() || [];
     const total = latestOrder.length || 0;
@@ -646,8 +650,8 @@ rollBtn.addEventListener('click', async ()=>{
     alert('擲骰失敗：' + (err.message || err));
   }finally{
     // UI will be re-enabled by renderRoom when currentTurn changes,
-    // but ensure button state is consistent for error cases
-    rollBtn.disabled = !rollBtn.disabled && !localState?.started ? true : rollBtn.disabled;
+    // ensure rollBtn re-enabled if something went wrong
+    rollBtn.disabled = !localState?.started;
   }
 });
 
@@ -679,6 +683,87 @@ rematchBtn.addEventListener('click', async ()=>{
     alert('重新開始失敗：' + e.message);
   }
 });
+
+// animate one piece step (fromIdx -> toIdx)
+// returns a Promise that resolves after duration + pause
+function animatePieceStep(pid, fromIdx, toIdx, duration = 300, pause = 100){
+  return new Promise(resolve=>{
+    try{
+      const fromCell = document.getElementById('cell-'+fromIdx);
+      const toCell = document.getElementById('cell-'+toIdx);
+      if(!fromCell || !toCell){
+        return setTimeout(resolve, duration + pause);
+      }
+
+      // try to find actual element in fromCell for that pid
+      let srcEl = fromCell.querySelector(`.piece[data-pid="${pid}"]`);
+      // if not found, synthesize based on localState players
+      if(!srcEl){
+        const p = (localState && localState.players && localState.players[pid]) || null;
+        srcEl = document.createElement('div');
+        srcEl.className = 'piece';
+        srcEl.textContent = p ? (p.name[0]||'?') : '?';
+        srcEl.style.background = p ? (p.color||'#666') : '#666';
+        // note: not appended to DOM; used only as template for clone
+      }
+
+      const fromRect = srcEl.getBoundingClientRect && srcEl.getBoundingClientRect().width ? srcEl.getBoundingClientRect() : fromCell.getBoundingClientRect();
+      const toRect = toCell.getBoundingClientRect();
+      const dx = (toRect.left + toRect.width/2) - (fromRect.left + fromRect.width/2);
+      const dy = (toRect.top + toRect.height/2) - (fromRect.top + fromRect.height/2);
+
+      // create fixed-position clone
+      const clone = srcEl.cloneNode(true);
+      clone.style.position = 'fixed';
+      clone.style.left = (fromRect.left) + 'px';
+      clone.style.top = (fromRect.top) + 'px';
+      clone.style.width = (fromRect.width) + 'px';
+      clone.style.height = (fromRect.height) + 'px';
+      clone.style.margin = '0';
+      clone.style.zIndex = 9999;
+      clone.style.transition = `transform ${duration}ms linear, opacity 80ms linear`;
+      clone.style.transform = 'translate(0px,0px)';
+      clone.style.pointerEvents = 'none';
+      document.body.appendChild(clone);
+
+      // move next frame
+      requestAnimationFrame(()=>{
+        clone.style.transform = `translate(${Math.round(dx)}px, ${Math.round(dy)}px)`;
+      });
+
+      // after move complete, remove clone and resolve after pause
+      setTimeout(()=>{
+        clone.remove();
+        setTimeout(resolve, pause);
+      }, duration + 10);
+    }catch(e){
+      console.warn('animatePieceStep error', e);
+      setTimeout(resolve, duration + pause);
+    }
+  });
+}
+
+// animate sequential steps for a player (from -> from+steps)
+// 現在會在每一步動畫後立刻寫入 DB，讓其他玩家看到逐步移動
+async function animatePlayerSteps(pid, fromIdx, steps){
+  if(steps <= 0) return;
+  let cur = fromIdx;
+  for(let i=1;i<=steps;i++){
+    const next = Math.min(BOARD_SIZE-1, fromIdx + i);
+    // animate one cell move (0.5s) then pause 0.2s
+    await animatePieceStep(pid, cur, next, 500, 200);
+
+    // 同步此一步到 DB，讓其他玩家看到逐步更新
+    try{
+      await roomRef.child(`players/${pid}/pos`).set(next);
+    }catch(e){
+      console.warn('failed to write step pos', e);
+    }
+
+    cur = next;
+  }
+  // 最終位置已在最後一步同步過，不再重複寫入
+}
 
 /* ---------- room cleanup ---------- */
 function cleanup(){
