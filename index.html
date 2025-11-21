@@ -139,7 +139,7 @@
   <div class="card" id="gameUI" style="display:none">
     <div class="row" style="justify-content:space-between">
       <div class="small">房號：<span id="roomIdView"></span></div>
-      <div class="small">你的id：<span id="myIdView"></span></div>
+      <!-- 玩家 id 不再顯示於 UI -->
     </div>
 
     <div style="margin-top:8px" class="players" id="playersList"></div>
@@ -249,7 +249,9 @@ firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 
 /* ---------- game settings ---------- */
-const BOARD_SIZE = 20; // 格子數量（簡單範例）
+const BOARD_SIZE = 50; // 改為 50 格
+const COLS = 5;        // 每列 5 格（固定）
+const ROWS = Math.ceil(BOARD_SIZE / COLS);
 const COLORS = ["#ef4444","#f59e0b","#10b981","#3b82f6","#8b5cf6","#ec4899"];
 
 /* ---------- DOM ---------- */
@@ -260,7 +262,7 @@ const roomInfo = document.getElementById("roomInfo");
 const lobby = document.getElementById("lobby");
 const gameUI = document.getElementById("gameUI");
 const roomIdView = document.getElementById("roomIdView");
-const myIdView = document.getElementById("myIdView");
+// (myIdView removed — 不在 UI 顯示)
 const playersList = document.getElementById("playersList");
 const boardEl = document.getElementById("board");
 const diceDisplay = document.getElementById("diceDisplay");
@@ -291,6 +293,7 @@ function setLog(txt){ logEl.textContent = txt; }
 
 // 可在這裡直接編輯 1~20 格子的文字（程式端清單）
 const LABELS = [
+  "起點",
   "1號格子",
   "2號格子",
   "3號格子",
@@ -310,19 +313,57 @@ const LABELS = [
   "17號格子",
   "18號格子",
   "19號格子",
-  "20號格子"
+  "20號格子",
+  "21號格子",
+  "22號格子",
+  "23號格子",
+  "24號格子",
+  "25號格子",
+  "26號格子",
+  "27號格子",
+  "28號格子",
+  "29號格子",
+  "30號格子",
+  "31號格子",
+  "32號格子",
+  "33號格子",
+  "34號格子",
+  "35號格子",
+  "36號格子",
+  "37號格子",
+  "38號格子",
+  "39號格子",
+  "40號格子",
+  "41號格子",
+  "42號格子",
+  "43號格子",
+  "44號格子",
+  "45號格子",
+  "46號格子",
+  "47號格子",
+  "48號格子",
+  "終點",
 ];
 
 // 用程式端 LABELS 清單來填入格子文字（不提供畫面編輯器）
 function buildBoard(){
   boardEl.innerHTML = "";
-  for(let i=0;i<BOARD_SIZE;i++){
-    const c = document.createElement("div");
-    c.className = "cell";
-    c.dataset.idx = i;
-    const label = LABELS[i] || "";
-    c.innerHTML = `<div class="idx">${i+1}</div><div class="pieces" id="cell-${i}"></div><div class="cellLabel">${label}</div>`;
-    boardEl.appendChild(c);
+  // S 型（蛇形）排列：第 0 列左->右，第1列右->左，依此類推
+  for(let r=0;r<ROWS;r++){
+    for(let c=0;c<COLS;c++){
+      // 對於最後一列可能超出 BOARD_SIZE 的格子，跳過
+      const gridIndex = r*COLS + c;
+      if(gridIndex >= BOARD_SIZE) break;
+      // 計算該格對應的邏輯索引（pos），若為奇數列則是反向
+      const logicalIdx = (r % 2 === 0) ? (r*COLS + c) : (r*COLS + (COLS - 1 - c));
+      const cell = document.createElement("div");
+      cell.className = "cell";
+      cell.dataset.idx = logicalIdx;
+      const label = LABELS[logicalIdx] || "";
+      // pieces 容器 的 id 使用邏輯索引，讓現有的 getElementById('cell-'+pos) 邏輯不需改
+      cell.innerHTML = `<div class="idx">${logicalIdx+1}</div><div class="pieces" id="cell-${logicalIdx}"></div><div class="cellLabel">${label}</div>`;
+      boardEl.appendChild(cell);
+    }
   }
 }
 
@@ -404,7 +445,6 @@ async function joinRoom(rid, playerId, playerName, isOwner){
   lobby.style.display = 'none';
   gameUI.style.display = 'block';
   roomIdView.textContent = rid;
-  myIdView.textContent = playerId;
   // share link
   const joinLink = location.href.split('#')[0] + '#room=' + rid;
   roomInfo.textContent = '分享此連結加入：' + joinLink;
@@ -443,10 +483,9 @@ function renderRoom(){
     const card = document.createElement('div');
     card.className = 'playerCard';
     card.style.borderLeft = `4px solid ${p.color || '#ccc'}`;
-    let meMark = pid===myId ? '（你）' : '';
-    card.innerHTML = `<div style="font-weight:700">${p.name} ${meMark}</div>
-      <div class="small">位置：${p.pos}</div>
-      <div class="small">id：${p.id}</div>`;
+    const meMark = pid === myId ? '（你）' : '';
+    // 僅顯示玩家名稱與是否為自己，隱藏位置與 id
+    card.innerHTML = `<div style="font-weight:700">${p.name} ${meMark}</div>`;
     playersList.appendChild(card);
   }
 
@@ -474,7 +513,8 @@ function renderRoom(){
   // endTurnBtn.disabled = !isMyTurn || !localState.started; // 已移除
 
   diceDisplay.textContent = '擲骰結果：' + (localState.lastAction?.dice ?? '—');
-  setLog(localState.started ? `輪到 ${players[currentPlayerId]?.name || 'N/A'}（id:${currentPlayerId || 'null'}）` : '等待房主開始遊戲');
+  // 只顯示名稱，不顯示 id
+  setLog(localState.started ? `輪到 ${players[currentPlayerId]?.name || 'N/A'}` : '等待房主開始遊戲');
 
   // start button for owner
   startWrap.innerHTML = '';
