@@ -27,6 +27,12 @@
   .players{display:flex;gap:8px;overflow:auto;padding:6px}
   .playerCard{background:#f2f5ff;padding:8px;border-radius:8px;min-width:100px}
   .small{font-size:12px;color:var(--muted)}
+
+  /* Room & turn display styling */
+  .roomHead { font-size:14px; color:var(--muted); }
+  .roomId { font-weight:800; font-size:18px; color:#111; padding:2px 6px; background:transparent; border-radius:6px; }
+  .turnInfo { font-weight:700; font-size:16px; color:var(--accent); padding:4px 8px; border-radius:6px; background:rgba(91,140,255,0.06); }
+
   .rematchBtn{
     position:absolute;
     right:12px;
@@ -160,21 +166,26 @@
   </header>
 
   <div class="card" id="lobby">
-    <div class="row" style="margin-bottom:8px">
-      <input id="name" type="text" placeholder="輸入你的名字（例：小明）" />
-      <button id="createBtn">建立房間</button>
-      <button id="joinBtn">加入房間</button>
+    <div class="lobby-row" style="margin-bottom:8px; display:flex; flex-direction:column; gap:8px;">
+      <input id="name" type="text" placeholder="輸入你的暱稱" />
+      <div class="lobby-actions" style="display:flex; gap:8px;">
+        <button id="createBtn" style="flex:1">建立房間</button>
+        <button id="joinBtn" style="flex:1">加入房間</button>
+      </div>
     </div>
-    <div class="row small">
-      <div id="roomInfo">尚未加入房間</div>
-    </div>
-    <div style="margin-top:8px" class="small">建立房間後分享網址或房號給朋友即可快速加入</div>
+    <div style="margin-top:8px" class="small">建立房間後分享房號給朋友即可快速加入</div>
   </div>
 
   <div class="card" id="gameUI" style="display:none">
     <div class="row" style="justify-content:space-between">
-      <div class="small">房號：<span id="roomIdView"></span></div>
-      <!-- 玩家 id 不再顯示於 UI -->
+      <div class="small roomHead" style="display:flex;align-items:center;gap:12px">
+        <div class="roomIdWrap" style="display:flex;align-items:center;gap:6px">
+          <div style="font-weight:700">房號：</div>
+          <div id="roomIdView" class="roomId"></div>
+        </div>
+        <div id="turnView" class="turnInfo">等待遊戲開始</div>
+      </div>
+      <!-- 右側保留空間（可放其他資訊） -->
     </div>
 
     <div style="margin-top:8px" class="players" id="playersList"></div>
@@ -309,6 +320,7 @@ const lobby = document.getElementById("lobby");
 const gameUI = document.getElementById("gameUI");
 const roomIdView = document.getElementById("roomIdView");
 // (myIdView removed — 不在 UI 顯示)
+const turnView = document.getElementById("turnView");
 const playersList = document.getElementById("playersList");
 const boardEl = document.getElementById("board");
 const diceDisplay = document.getElementById("diceDisplay");
@@ -387,8 +399,12 @@ function renderRoom(){
   // endTurnBtn.disabled = !isMyTurn || !localState.started; // 已移除
 
   diceDisplay.textContent = '擲骰結果：' + (localState.lastAction?.dice ?? '—');
-  // 只顯示名稱，不顯示 id
-  setLog(localState.started ? `輪到 ${players[currentPlayerId]?.name || 'N/A'}` : '等待房主開始遊戲');
+  // 更新右側的輪到玩家顯示（只顯示名稱）
+  if(localState.started){
+    turnView.textContent = `輪到 ${players[currentPlayerId]?.name || 'N/A'}`;
+  } else {
+    turnView.textContent = '等待房主開始遊戲';
+  }
 
   // start button for owner
   startWrap.innerHTML = '';
@@ -459,7 +475,7 @@ function uid(len=6){
 function now(){ return Date.now(); }
 function setLog(txt){ logEl.textContent = txt; }
 
-// 可在這裡直接編輯 1~20 格子的文字（程式端清單）
+// 可在這裡直接編輯 1~50 格子的文字（程式端清單）
 const LABELS = [
   "起點",
   "分享最喜歡的性愛體位",
@@ -500,7 +516,7 @@ const LABELS = [
   "除了你以外的玩家各脫一件衣服",
   "撫摸對方伴侶的胸15秒",
   "愛撫對方伴侶私處20秒",
-  "所有人脫一件衣服",
+  "所有人脀一件衣服",
   "跟對方伴侶熱吻10秒",
   "對方伴侶跨坐在你身上直到下個動作",
   "舔對方伴侶奶頭10秒",
@@ -619,129 +635,6 @@ async function joinRoom(rid, playerId, playerName, isOwner){
   // auto-handle if url had room id (support opening via link)
   if(location.hash.includes('room=')){
     // nothing extra
-  }
-}
-
-/* ---------- render ---------- */
-function renderRoom(){
-  // players
-  playersList.innerHTML = '';
-  const players = localState.players || {};
-
-  // Ensure turnOrder exists and is valid. If missing or empty, create from current players.
-  if(!Array.isArray(localState.turnOrder) || localState.turnOrder.length === 0){
-    const ids = Object.keys(players);
-    if(ids.length > 0){
-      // write turnOrder once (owner should ideally do this, but set optimistically)
-      roomRef.child('turnOrder').set(ids);
-      // return early; we'll re-render when DB updates
-      return;
-    }
-  }
-
-  const turnOrder = localState.turnOrder || [];
-  // ensure currentTurn is a valid number
-  let currentTurn = Number.isInteger(localState.currentTurn) ? localState.currentTurn : 0;
-  if(turnOrder.length === 0) currentTurn = 0;
-  if(currentTurn >= turnOrder.length) currentTurn = 0;
-
-  // render player cards
-  for(const pid of Object.keys(players)){
-    const p = players[pid];
-    const card = document.createElement('div');
-    card.className = 'playerCard';
-    card.style.borderLeft = `4px solid ${p.color || '#ccc'}`;
-    const meMark = pid === myId ? '（你）' : '';
-    // 僅顯示玩家名稱與是否為自己，隱藏位置與 id
-    card.innerHTML = `<div style="font-weight:700">${p.name} ${meMark}</div>`;
-    playersList.appendChild(card);
-  }
-
-  // draw board pieces
-  for(let i=0;i<BOARD_SIZE;i++){
-    const cell = document.getElementById('cell-'+i);
-    if(cell) cell.innerHTML = ''; // clear pieces
-  }
-  for(const pid in players){
-    const p = players[pid];
-    const pos = Math.max(0, Math.min(BOARD_SIZE-1, p.pos || 0));
-    const el = document.createElement('div');
-    el.className = 'piece';
-    // allow animation to identify which piece belongs to誰
-    el.dataset.pid = pid;
-    el.style.background = p.color || '#666';
-    el.textContent = p.name[0] || '?';
-    el.title = p.name + (pid===turnOrder[currentTurn] ? ' (當前回合)' : '');
-    const container = document.getElementById('cell-'+pos);
-    if(container) container.appendChild(el);
-  }
-
-  // dice & turn UI
-  const currentPlayerId = turnOrder.length ? turnOrder[currentTurn] : null;
-  const isMyTurn = currentPlayerId === myId;
-  rollBtn.disabled = !isMyTurn || !localState.started;
-  // endTurnBtn.disabled = !isMyTurn || !localState.started; // 已移除
-
-  diceDisplay.textContent = '擲骰結果：' + (localState.lastAction?.dice ?? '—');
-  // 只顯示名稱，不顯示 id
-  setLog(localState.started ? `輪到 ${players[currentPlayerId]?.name || 'N/A'}` : '等待房主開始遊戲');
-
-  // start button for owner
-  startWrap.innerHTML = '';
-  const ownerId = localState.ownerId || Object.values(players).find(p => p.isOwner)?.id || Object.keys(players)[0];
-  if(ownerId === myId && !localState.started && Object.keys(players).length > 1){
-    const btn = document.createElement('button');
-    btn.textContent = '開始遊戲';
-    btn.onclick = async ()=>{
-      // ensure turnOrder initialized from current players, then start
-      const snap = await roomRef.child('players').once('value');
-      const ps = snap.val() || {};
-      const ids = Object.keys(ps);
-      if(ids.length > 0){
-        await roomRef.update({ started: true, turnOrder: ids, currentTurn: 0 });
-      } else {
-        await roomRef.child('started').set(true);
-      }
-    };
-    startWrap.appendChild(btn);
-  }
-
-  // 顯示/隱藏「再來一場」按鈕：當房間有 winner 且當前使用者為房主時顯示
-  if(localState.winner && ownerId === myId){
-    rematchBtn.style.display = 'inline-block';
-  } else {
-    rematchBtn.style.display = 'none';
-  }
-  // if game not started, disable roll
-  if(!localState.started) {
-    rollBtn.disabled = true;
-    // endTurnBtn.disabled = true; // 已移除
-  }
-
-  // disable rollBtn if pendingAction exists or not your turn
-  const pending = localState.pendingAction || null;
-  const isPending = !!pending;
-  rollBtn.disabled = (!isMyTurn) || !localState.started || isPending;
-
-  // show pending modal if pendingAction present
-  if(pending){
-    // show big label text from LABELS (use pending.cell as index)
-    const idx = Number.isInteger(pending.cell) ? pending.cell : null;
-    const labelText = (idx !== null && LABELS[idx]) ? LABELS[idx] : `第 ${idx+1} 格`;
-    pendingLabel.textContent = labelText;
-    // only the player who triggered can confirm
-    if(pending.by === myId){
-      pendingConfirm.style.display = 'inline-block';
-      pendingConfirm.disabled = false;
-      pendingCancel.style.display = 'none';
-    } else {
-      // others see modal but cannot confirm
-      pendingConfirm.style.display = 'none';
-      pendingCancel.style.display = 'none';
-    }
-    pendingModal.classList.add('show');
-  } else {
-    pendingModal.classList.remove('show');
   }
 }
 
