@@ -37,11 +37,12 @@
     position:relative;
     font-weight:600;
     color:#333;
-    overflow:hidden;
+    overflow:visible;           /* 允許箭頭超出格子邊界不被裁切 */
+    z-index:1;                  /* 讓箭頭（較高 z）可以蓋過相鄰格子 */
     padding:6px;
     box-sizing:border-box;
   }
-  .cell .idx{position:absolute;left:6px;top:4px;font-size:11px;color:var(--muted)}
+  .cell .idx{ display:none; }
   .pieces{display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
   .piece{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:white;font-weight:700}
   .controls{display:flex;gap:8px;align-items:center;justify-content:center;margin-top:8px}
@@ -194,6 +195,53 @@
     display:block;
     line-height:1.1;
   }
+
+  .dirArrow{
+    position:absolute;
+    width:20px;
+    height:20px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:18px;
+    color:var(--muted);
+    pointer-events:none;
+    line-height:1;
+    z-index:50; /* 提高，確保在其他格子之上 */
+    transition:transform 180ms linear, opacity 180ms linear;
+  }
+  /* 水平向右（箭頭置於格子右邊界） */
+  .dirArrow.dir-right{
+    right:-10px;             /* adjust distance to border */
+    top:50%;
+    transform:translateY(-50%) rotate(0deg);
+    opacity:0.95;
+  }
+  /* 水平向左（箭頭置於格子左邊界） */
+  .dirArrow.dir-left{
+    left:-10px;
+    top:50%;
+    transform:translateY(-50%) rotate(180deg);
+    opacity:0.95;
+  }
+  /* 垂直向下（箭頭置於格子底部邊界） */
+  .dirArrow.dir-down{
+    bottom:-10px;
+    left:50%;
+    transform:translateX(-50%) rotate(90deg);
+    opacity:0.95;
+  }
+  /* 垂直向上（箭頭置於格子上方邊界） */
+  .dirArrow.dir-up{
+    top:-10px;
+    left:50%;
+    transform:translateX(-50%) rotate(-90deg);
+    opacity:0.95;
+  }
+  .dirArrow.dir-none{
+    opacity:0;
+    pointer-events:none;
+  }
 </style>
 </head>
 <body>
@@ -320,7 +368,7 @@
 /* ============================
   Firebase config - 填入你的專案資訊
   在 Firebase 控制台 -> 專案設定 找到 config，貼到下面
-  範例（請替換為你自己的）：
+  範例（請替換為你自己的）：：
 */
 const firebaseConfig = {
   apiKey: "AIzaSyBiTqclRRAs-PZZ68Usy07fKuFFUmV8_9g",
@@ -374,6 +422,7 @@ const pendingModal = document.getElementById('pendingModal');
 const pendingLabel = document.getElementById('pendingLabel');
 const pendingConfirm = document.getElementById('pendingConfirm');
 const pendingCancel = document.getElementById('pendingCancel');
+
 
 // renderRoom: 顯示/隱藏 pending modal 與按鈕狀態
 function renderRoom(){
@@ -512,7 +561,7 @@ function uid(len=6){
 function now(){ return Date.now(); }
 function setLog(txt){ logEl.textContent = txt; }
 
-// 可在這裡直接編輯 1~50 格子的文字（程式端清單）
+/* 可在這裡直接編輯 1~50 格子的文字（程式端清單） */
 const LABELS = [
   "起點",
   "分享最喜歡的性愛體位",
@@ -566,26 +615,59 @@ const LABELS = [
   "到達終點的贏家可指定動作",
 ];
 
-// 用程式端 LABELS 清單來填入格子文字（不提供畫面編輯器）
+// 用程式端 LABELS 清單來填入格子文字中間的方向箭頭（不提供畫面編輯器）
 function buildBoard(){
   boardEl.innerHTML = "";
-  // S 型（蛇形）排列：第 0 列左->右，第1列右->左，依此類推
+  // 保存視覺座標 (row/col) 對應到邏輯 index
+  const posMap = new Array(BOARD_SIZE);
+  // 先以視覺格順序建立 cell DOM，並記錄每個 logicalIdx 的視覺 row/col
   for(let r=0;r<ROWS;r++){
     for(let c=0;c<COLS;c++){
-      // 對於最後一列可能超出 BOARD_SIZE 的格子，跳過
       const gridIndex = r*COLS + c;
       if(gridIndex >= BOARD_SIZE) break;
-      // 計算該格對應的邏輯索引（pos），若為奇數列則是反向
       const logicalIdx = (r % 2 === 0) ? (r*COLS + c) : (r*COLS + (COLS - 1 - c));
       const cell = document.createElement("div");
       cell.className = "cell";
       cell.dataset.idx = logicalIdx;
       const label = LABELS[logicalIdx] || "";
-      // pieces 容器 的 id 使用邏輯索引，讓現有的 getElementById('cell-'+pos) 邏輯不需改
-      cell.innerHTML = `<div class="idx">${logicalIdx+1}</div><div class="pieces" id="cell-${logicalIdx}"></div><div class="cellLabel">${label}</div>`;
+      // 內含 pieces 與 cellLabel，並預留箭頭位置
+      cell.innerHTML = `<div class="pieces" id="cell-${logicalIdx}"></div><div class="cellLabel">${label}</div><div class="dirArrow dir-none" id="arrow-${logicalIdx}">›</div>`;
       boardEl.appendChild(cell);
+      posMap[logicalIdx] = { row: r, col: c };
     }
   }
+
+  // 計算每個格子的箭頭方向（根據下一個 logical index 的視覺位置）
+  for(let i=0;i<BOARD_SIZE;i++){
+    const arrowEl = document.getElementById(`arrow-${i}`);
+    if(!arrowEl) continue;
+    if(i >= BOARD_SIZE - 1){
+      // 最後一格不顯示箭頭
+      arrowEl.className = 'dirArrow dir-none';
+      continue;
+    }
+    const cur = posMap[i];
+    const nxt = posMap[i+1];
+    if(!cur || !nxt){
+      arrowEl.className = 'dirArrow dir-none';
+      continue;
+    }
+    // 比較視覺座標，決定方向
+    if(nxt.row === cur.row && nxt.col === cur.col + 1){
+      arrowEl.className = 'dirArrow dir-right';
+    }else if(nxt.row === cur.row && nxt.col === cur.col - 1){
+      arrowEl.className = 'dirArrow dir-left';
+    }else if(nxt.row === cur.row + 1 && nxt.col === cur.col){
+      arrowEl.className = 'dirArrow dir-down';
+    }else if(nxt.row === cur.row - 1 && nxt.col === cur.col){
+      arrowEl.className = 'dirArrow dir-up';
+    }else{
+      arrowEl.className = 'dirArrow dir-none';
+    }
+  }
+
+  // ensure labels fit after board built
+  adjustCellLabels();
 }
 
 // 新增：產生 4 位數字房號
