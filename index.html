@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>手機棋盤 Prototype — 大富翁</title>
+<title>情趣大富翁</title>
 <!-- Firebase SDKs -->
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
@@ -338,7 +338,7 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>大富翁（Prototype）</h1>
+    <h1>情趣大富翁</h1>
   </header>
 
   <div class="card" id="lobby">
@@ -666,7 +666,12 @@ function renderRoom(){
     const lastAction = localState.lastAction || null;
     const justRolled = lastAction && lastAction.by === myId && lastAction.type === 'roll';
     
-    if(localState.started && isMyTurn && !isPending && !localState.winner && !justRolled){
+    // 檢查是否有 diceAnimation 正在進行（避免在動畫期間顯示 modal）
+    const diceAnim = localState.diceAnimation || null;
+    const animating = diceAnim && (now() - diceAnim.ts < 3000); // 3秒內視為動畫中
+    
+    // 只有在沒有動畫、沒有擲過骰、輪到自己且無 pending 時才顯示
+    if(localState.started && isMyTurn && !isPending && !localState.winner && !justRolled && !animating){
       yourTurnModal.classList.add('show');
       rollBtn.disabled = false;
     } else {
@@ -889,6 +894,24 @@ async function joinRoom(rid, playerId, playerName, isOwner){
     }
     renderRoom();
   });
+
+  // 監聽 diceAnimation 節點，當有新動畫時播放給所有人看
+  let lastDiceAnimationTs = 0;
+  roomRef.child('diceAnimation').on('value', snapshot=>{
+    const anim = snapshot.val();
+    if(!anim) return;
+    
+    // 避免重複播放（檢查時間戳）
+    if(anim.ts && anim.ts > lastDiceAnimationTs){
+      lastDiceAnimationTs = anim.ts;
+      
+      // 如果不是自己擲的骰子，就播放動畫（自己的已在 rollBtn 中播放）
+      if(anim.by !== myId){
+        animateDiceAndShow(anim.face);
+      }
+    }
+  });
+
   // update UI
   lobby.style.display = 'none';
   gameUI.style.display = 'block';
@@ -965,9 +988,18 @@ rollBtn.addEventListener('click', async ()=>{
   // disable UI immediately to prevent multiple clicks
   rollBtn.disabled = true;
 
-  // 預先產生點數，然後播動畫顯示（動畫結束後才把結果寫入 DB 或做步進）
+  // 預先產生點數
   const dice = Math.floor(Math.random()*6)+1;
+  
   try{
+    // 寫入 diceAnimation 節點到 DB，觸發所有客戶端播放動畫
+    await roomRef.child('diceAnimation').set({
+      face: dice,
+      by: myId,
+      ts: now()
+    });
+
+    // 本地也播放動畫（避免延遲）
     await animateDiceAndShow(dice);
 
     // 寫 lastAction (so others see the dice result)
