@@ -228,12 +228,13 @@
   .btn-cancel{ background:#9ca3af; color:#fff }
   .btn-confirm{ background:#3b82f6; color:#fff }
 
-  /* 格子標籤（cellLabel）樣式：置中、允許換行並以 JS 動態調整字體 */
+  /* 格子標籤（cellLabel）樣式：完全置中、允許換行並以 JS 動態調整字體 */
   .cellLabel{
     position:absolute;
-    bottom:6px;
-    left:8px;
-    right:8px;
+    top:50%;
+    left:50%;
+    transform:translate(-50%,-50%);
+    width:calc(100% - 16px);  /* 留出左右各 8px padding */
     text-align:center;
     font-size:14px;        /* 基準字體，會被 JS 縮放 */
     color:var(--muted);
@@ -438,7 +439,10 @@ const db = firebase.database();
 const BOARD_SIZE = 50; // 改為 50 格
 const COLS = 5;        // 每列 5 格（固定）
 const ROWS = Math.ceil(BOARD_SIZE / COLS);
-const COLORS = ["#ef4444","#f59e0b","#10b981","#3b82f6","#8b5cf6","#ec4899"];
+const COLORS = [
+  "#ef4444","#f59e0b","#10b981","#3b82f6","#8b5cf6","#ec4899",
+  "#06b6d4","#84cc16","#f43f5e","#a855f7","#14b8a6","#f97316"
+];
 
 /* ---------- DOM ---------- */
 const nameInput = document.getElementById("name");
@@ -766,9 +770,29 @@ joinBtn.addEventListener("click", async ()=>{
 // join logic (isOwner flag if creator)
 async function joinRoom(rid, playerId, playerName, isOwner){
   roomRef = db.ref('rooms/'+rid);
+  
+  // 讀取目前房間內所有玩家已使用的顏色
+  const snap = await roomRef.child('players').once('value');
+  const existingPlayers = snap.val() || {};
+  const usedColors = Object.values(existingPlayers).map(p => p.color).filter(Boolean);
+  
+  // 從 COLORS 中挑選第一個未被使用的顏色
+  let assignedColor = COLORS.find(c => !usedColors.includes(c));
+  // 如果所有顏色都被用完（玩家數超過顏色數），則隨機分配或用預設色
+  if(!assignedColor){
+    assignedColor = COLORS[Math.floor(Math.random() * COLORS.length)];
+  }
+  
   // add player to players list
   const playerRef = roomRef.child('players').child(playerId);
-  const playerObj = {id: playerId, name: playerName, pos: 0, color: COLORS[Math.floor(Math.random()*COLORS.length)], joinedAt: now(), isOwner: !!isOwner};
+  const playerObj = {
+    id: playerId, 
+    name: playerName, 
+    pos: 0, 
+    color: assignedColor,  // 使用挑選的唯一顏色
+    joinedAt: now(), 
+    isOwner: !!isOwner
+  };
   await playerRef.set(playerObj);
   // ensure presence removal on disconnect
   playerRef.onDisconnect().remove();
@@ -1149,7 +1173,79 @@ function adjustCellLabels(){
   // schedule on next frame so layout has settled
   requestAnimationFrame(()=>{
     const labels = document.querySelectorAll('.cellLabel');
-    labels.forEach(l => fitLabelToBox(l, 14, 8));
+    
+    // 分離起點/終點與一般格子
+    const normalLabels = [];
+    const specialLabels = []; // 起點 (data-idx=0) 與終點 (data-idx=49)
+    
+    labels.forEach(l => {
+      const cell = l.closest('.cell');
+      if(!cell) return;
+      const idx = cell.dataset.idx;
+      // 排除第一格 (0) 與最後一格 (49)
+      if(idx === '0' || idx === '49'){
+        specialLabels.push(l);
+      } else {
+        normalLabels.push(l);
+      }
+    });
+
+    // 如果沒有一般格子，直接返回
+    if(normalLabels.length === 0) return;
+
+    // 先對每個一般格子試算出各自的最小字體（不實際套用）
+    let globalMinFont = 14; // 起始最大字體
+    const maxFont = 14;
+    const minFont = 8;
+
+    for(const labelEl of normalLabels){
+      const cell = labelEl.closest('.cell');
+      if(!cell) continue;
+
+      // 暫時套用 maxFont 並計算可用空間
+      let font = maxFont;
+      labelEl.style.fontSize = font + 'px';
+      labelEl.style.lineHeight = '1.05';
+      labelEl.style.whiteSpace = 'normal';
+      labelEl.style.display = 'block';
+      labelEl.style.overflow = 'hidden';
+
+      const cs = getComputedStyle(cell);
+      const padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+      const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+      const availW = Math.max(4, cell.clientWidth - padX);
+      const availH = Math.max(4, cell.clientHeight - padY);
+
+      // 縮小直到適合
+      let iter = 0;
+      while(iter < 30){
+        const overflowX = labelEl.scrollWidth > availW + 1;
+        const overflowY = labelEl.scrollHeight > availH + 1;
+        if(!overflowX && !overflowY) break;
+        font--;
+        if(font < minFont){ font = minFont; break; }
+        labelEl.style.fontSize = font + 'px';
+        iter++;
+      }
+
+      // 記錄此格子所需的最小字體
+      if(font < globalMinFont) globalMinFont = font;
+    }
+
+    // 統一套用 globalMinFont 到所有一般格子
+    normalLabels.forEach(l => {
+      l.style.fontSize = globalMinFont + 'px';
+      l.style.lineHeight = '1.05';
+      l.style.whiteSpace = 'normal';
+      l.style.display = 'block';
+      l.style.overflow = 'hidden';
+    });
+
+    // 起點與終點保持原始樣式或單獨處理（這裡不改變字體）
+    specialLabels.forEach(l => {
+      // 可選：設定固定字體或保持預設
+      // l.style.fontSize = '14px'; // 若要固定大小
+    });
   });
 }
 
